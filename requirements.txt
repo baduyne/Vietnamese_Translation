@@ -1,0 +1,12 @@
+pandas>=1.3.0
+numpy>=1.21.0
+emoji>=2.0.0
+langdetect>=1.0.9
+spacy>=3.5.0
+requests>=2.25.0
+pandas>=1.3.0
+jsonlib>=1.6.1  # Optional (see note below)
+lxml>=4.6.3
+numpy>=1.21.0
+beautifulsoup4>=4.9.3
+
