@@ -234,7 +234,7 @@ class Decoder_Layer(nn.Module):
         self.dropout_3 = nn.Dropout(dropout)
 
         # 2 multi-head attention blocks
-        self.attn_1 = Multihead_Attention(head, d_model, dropout=dropout)  # ✅ fix cú pháp thiếu dấu phẩy
+        self.attn_1 = Multihead_Attention(head, d_model, dropout=dropout)  
         self.attn_2 = Multihead_Attention(head, d_model, dropout=dropout)
 
         # Feedforward network
