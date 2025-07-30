@@ -1,10 +1,10 @@
 # English-to-Vietnamese Neural Machine Translation
 
-## 📌 Overview
+## Overview
 
 This project focuses on building a **Neural Machine Translation (NMT)** system that translates **English** sentences to **Vietnamese** using **Transformer architecture**, implemented **from scratch**. The goal is to explore the effectiveness of **Natural Language Processing (NLP)** techniques in machine translation, with full control over each training step.
 
-## 📂 Dataset
+## Dataset
 
 The dataset was collected and curated from two primary sources:
 
@@ -13,7 +13,7 @@ The dataset was collected and curated from two primary sources:
 
 After crawling, a substantial parallel corpus of English-Vietnamese sentence pairs was obtained for training and evaluation.
 
-### 🔧 Data Preprocessing
+### Data Preprocessing
 
 The raw data underwent several cleaning steps:
 
@@ -25,7 +25,7 @@ The raw data underwent several cleaning steps:
 
 After cleaning, the dataset was split into training, validation, and testing sets.
 
-## 🧠 Model Architecture
+## Model Architecture
 
 The core model is a **Transformer** inspired by *"Attention is All You Need"* (Vaswani et al., 2017), implemented step by step using PyTorch (or TensorFlow depending on your implementation). The key components include:
 
@@ -36,7 +36,7 @@ The core model is a **Transformer** inspired by *"Attention is All You Need"* (V
 - Layer Normalization & Residual Connections
 - Final Linear + Softmax output layer
 
-### 🧪 Features
+### Features
 
 - **Trained from scratch** without using high-level libraries like Hugging Face.
 - Modular, readable implementation.
@@ -44,7 +44,7 @@ The core model is a **Transformer** inspired by *"Attention is All You Need"* (V
 - Training with **cross-entropy loss** and **Adam optimizer**.
 - Support for **early stopping** and model checkpointing.
 
-## ✂️ Tokenization
+## Tokenization
 
 Instead of using pre-trained tokenizers, we **built a dictionary directly from the dataset**:
 
@@ -53,7 +53,7 @@ Instead of using pre-trained tokenizers, we **built a dictionary directly from t
 - Vocabulary built based on word frequency (with an adjustable frequency threshold).
 - Tokenization and detokenization handled through custom `Tokenizer` class.
 
-## 📈 Evaluation
+## Evaluation
 
 Model performance is evaluated using:
 
