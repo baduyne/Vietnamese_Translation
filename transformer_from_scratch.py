@@ -88,7 +88,7 @@ class FeedForward(nn.Module):
 
 # ==== Relative Position Bias ====
 class RelativePositionBias(nn.Module):
-    def __init__(self, num_heads, num_buckets=32, max_distance=127):
+    def __init__(self, num_heads, num_buckets=32, max_distance=200):
         super().__init__()
         self.num_heads = num_heads
         self.num_buckets = num_buckets
