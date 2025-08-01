@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import math
 import random
 import torch.nn as nn
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, BitsAndBytesConfig
 import numpy as np
 import pandas as pd
 from torch import optim
@@ -12,58 +13,8 @@ from tqdm import tqdm
 import torch.autograd as Variable
 from sklearn.model_selection import train_test_split
 
+Refered_Model = "VietAI/vit5-base"
 
-def Create_Dictionary(src_sents, trg_sents):
-    src_words = set()
-    trg_words = set()
-
-    # create vocab
-    for sent in src_sents:
-        src_words.update(sent.split()) # update function allows us to add many items in the same thing
-
-    for sent in trg_sents:
-        trg_words.update(sent.split())
-
-    #
-    src_vocab = {"<sos>":0, "<eos>": 1, "<pad>":2, "<unk>":3}
-    for i, word in enumerate(src_words, start= 4):
-        src_vocab[word] = i
-
-
-    trg_vocab = {"<sos>":0, "<eos>": 1, "<pad>":2, "<unk>": 3}
-    for i, word in enumerate(trg_words, start = 4):
-        trg_vocab[word] = i
-
-    return  src_vocab, trg_vocab
-
-
-
-
-class Read_Dataset(Dataset):
-    def __init__(self, src_sents, tgt_sents, src_vocab, trg_vocab, max_leng = 50):
-        super().__init__()
-
-        self.src = src_sents
-        self.tgt = tgt_sents
-        self.src_vocab = src_vocab
-        self.trg_vocab = trg_vocab
-        self.max_leng = max_leng
-
-    def __len__(self):
-        return len(self.src)
-
-    def __getitem__(self, index):
-        src_sentence = self.src[index]
-        trg_sentence = self.tgt[index]
-
-        src_indices = [self.src_vocab['<sos>']] + [self.src_vocab.get(word.lower(), self.src_vocab['<unk>']) for word in src_sentence.split()] + [self.src_vocab['<eos>']]
-        trg_indices = [self.trg_vocab['<sos>']] + [self.trg_vocab.get(word.lower(), self.trg_vocab['<unk>']) for word in trg_sentence.split()] + [self.trg_vocab['<eos>']]
-
-        # Sửa lại padding để đảm bảo đúng max_length
-        src_indices = src_indices[:self.max_leng] + [self.src_vocab['<pad>']] * max(0, self.max_leng - len(src_indices))
-        trg_indices = trg_indices[:self.max_leng] + [self.trg_vocab['<pad>']] * max(0, self.max_leng - len(trg_indices))
-
-        return torch.LongTensor(src_indices), torch.LongTensor(trg_indices)
 
 class Embedding_Layer(nn.Module):
     def __init__(self, vocab_size, d_model):
@@ -72,91 +23,22 @@ class Embedding_Layer(nn.Module):
         self.d_model = d_model
 
     def forward(self, x):
-        return self.embedding(x) * math.sqrt(self.d_model)
+        return self.embedding(x) / math.sqrt(self.d_model)
 
 
 
 class Position_Layer(nn.Module):
-    def __init__(self, d_model, max_len=200, dropout=0.1):
+    def __init__(self, max_len, d_model, dropout=0.1):
         super().__init__()
+
+        self.pe = nn.Embedding(max_len, d_model)
         self.dropout = nn.Dropout(dropout)
-
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x + self.pe[:, :x.size(1)]
+        batch_size, sep_len,_  = x.size()
+        pos = torch.arange(sep_len, device= x.device).unsqueeze(0).expand(batch_size, sep_len)
+        x = x + self.pe(pos)
         return self.dropout(x)
-
-
-
-
-
-def Attention(q,k,v, mask = None, dropout = None):
-
-    # q,k,v shape [batch_size, seq_leng, d_model]
-    d_model = q.size(-1)
-    score = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_model)
-
-    if mask is not None:
-        score = score.masked_fill(mask ==0, -1e10)
-
-    sort_max = F.softmax(score, -1)
-
-    if dropout is not None:
-        sort_max = dropout(sort_max)
-
-    return torch.matmul(sort_max,v), sort_max
-
-
-
-
-# Multi-Head Attention
-class Multihead_Attention(nn.Module):
-    def __init__(self, head, d_model, dropout=0.1):
-        super().__init__()
-        assert d_model % head == 0
-        self.d_k = d_model // head
-        self.h = head
-
-        self.q_linear = nn.Linear(d_model, d_model)
-        self.k_linear = nn.Linear(d_model, d_model)
-        self.v_linear = nn.Linear(d_model, d_model)
-
-        self.dropout = nn.Dropout(dropout)
-        self.out = nn.Linear(d_model, d_model)
-
-    def forward(self, q, k, v, mask=None):
-        batch_size = q.size(0)
-
-        # Linear projections
-        q = self.q_linear(q).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
-        k = self.k_linear(k).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
-        v = self.v_linear(v).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
-
-        # Adjust mask shape
-        if mask is not None:
-            # mask: [batch_size, 1, 1, seq_len] -> [batch_size, h, seq_len, seq_len]
-            mask = mask.unsqueeze(1)  # Add head dimension
-            # This ensures it can be broadcasted over attention scores
-
-        # Calculate attention
-        scores, attn = Attention(q, k, v, mask=mask, dropout=self.dropout)
-
-        # Concatenate heads
-        concat = scores.transpose(1, 2).contiguous().view(batch_size, -1, self.h * self.d_k)
-
-        # Final linear layer
-        output = self.out(concat)
-        return output
-
-
 
 
 class Norm(nn.Module):
@@ -172,23 +54,105 @@ class Norm(nn.Module):
         return self.a * (x - mean) / (std + self.eps) + self.b
 
 
-
-
 class FeedForward(nn.Module):
-    """ Trong kiến trúc của chúng ta có tầng linear
-    """
+
     def __init__(self, d_model, d_ff=2048, dropout = 0.1):
         super().__init__()
 
-        # We set d_ff as a default to 2048
         self.linear_1 = nn.Linear(d_model, d_ff)
+        self.gate = nn.Linear(d_model, d_ff)
         self.dropout = nn.Dropout(dropout)
         self.linear_2 = nn.Linear(d_ff, d_model)
 
     def forward(self, x):
-        x = self.dropout(F.relu(self.linear_1(x)))
-        x = self.linear_2(x)
+        x_ff = self.linear_1(x) 
+        x_gate = self.gate(x)
+        x = F.silu(x_ff) * x_gate 
+        x = self.linear_2(self.dropout(x))
         return x
+
+class RelativePositionBias(nn.Module):
+    def __init__(self, num_heads, num_buckets=32, max_distance=128):
+        super().__init__()
+        self.num_heads = num_heads
+        self.num_buckets = num_buckets
+        self.max_distance = max_distance
+        self.relative_attention_bias = nn.Embedding(num_buckets, num_heads)
+
+    def _relative_position_bucket(self, relative_position):
+        num_buckets = self.num_buckets // 2
+        relative_buckets = (relative_position > 0).long() * num_buckets
+        relative_position = torch.abs(relative_position)
+        max_exact = num_buckets // 2
+        is_small = relative_position < max_exact
+        relative_position_if_large = max_exact + (
+            torch.log(relative_position.float() / max_exact)
+            / math.log(self.max_distance / max_exact)
+            * (num_buckets - max_exact)
+        ).long()
+        relative_position_if_large = torch.min(
+            relative_position_if_large, torch.full_like(relative_position_if_large, num_buckets - 1)
+        )
+        relative_buckets += torch.where(is_small, relative_position, relative_position_if_large)
+        return relative_buckets
+
+    def forward(self, seq_len, device):
+        context_position = torch.arange(seq_len, dtype=torch.long, device=device)[:, None]
+        memory_position = torch.arange(seq_len, dtype=torch.long, device=device)[None, :]
+        relative_position = memory_position - context_position  # [T, T]
+        rp_bucket = self._relative_position_bucket(relative_position)
+        values = self.relative_attention_bias(rp_bucket)  # [T, T, H]
+        return values.permute(2, 0, 1).unsqueeze(0)  # [1, H, T, T]
+
+
+# Multi-Head Attention
+class MultiQuery_attention(nn.Module):
+    def __init__(self, num_heads, d_model, dropout_rate, num_buckets=32, max_distance=128):
+        super().__init__()
+        self.head = num_heads
+        self.d_model = d_model
+        self.d_h = self.d_model // self.head
+        self.q = nn.Linear(self.d_model, self.d_model, bias= False) 
+        self.k = nn.Linear(self.d_model, self.d_h,bias= False) 
+        self.v = nn.Linear(self.d_model, self.d_h, bias= False)
+        self.o = nn.Linear(self.d_model, self.d_model, bias=False)
+        self.relative_position_bias= RelativePositionBias(num_heads, num_buckets, max_distance)
+        self.dropout = nn.Dropout(dropout_rate)
+
+    def forward(self, hidden_states,mask=None, key_value_states = None):
+        batch_size, seq_len = hidden_states.shape[:2]
+
+        device = hidden_states.device
+        q = self.q(hidden_states)  # [B, T, d_model]
+
+        key_value_encoder = hidden_states if key_value_states is None else key_value_states
+        k = self.k(key_value_encoder)  # [B, T, d_h]
+        v = self.v(key_value_encoder)  # [B, T, d_h]
+
+        q = q.view(batch_size, seq_len, self.head, self.d_h).transpose(1, 2)  # [B, head, T, d_h]
+        k = k.unsqueeze(1)  # [B, 1, T, d_h]
+        v = v.unsqueeze(1)  # [B, 1, T, d_h]
+
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_h)
+
+        reposbs = self.relative_position_bias(seq_len, device)
+
+        scores = scores + reposbs
+        if mask is not None:
+            if mask.dim() == 2:
+                mask = mask.unsqueeze(1).unsqueeze(2)
+            elif mask.dim() == 3:
+                mask = mask.unsqueeze(1)
+            scores = scores + mask 
+
+        attn_weights = nn.functional.softmax(scores, dim=-1)
+        attn_output = torch.matmul(attn_weights, v)  # [B, head, T, d_h]
+
+        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.d_model)
+        attn_output = self.o(attn_output)
+        attn_output = self.dropout(attn_output)
+        return attn_output
+
 
 
 class Encoder_layer(nn.Module):
@@ -201,7 +165,7 @@ class Encoder_layer(nn.Module):
         self.norm2 = Norm(d_model)
 
         # Multi-head attention
-        self.multi_head = Multihead_Attention(head=head, d_model=d_model, dropout=dropout)
+        self.multi_head = MultiQuery_attention(head,d_model,dropout)
 
         # Feed-forward network
         self.ffn = FeedForward(d_model, dropout=dropout)
@@ -212,7 +176,7 @@ class Encoder_layer(nn.Module):
 
     def forward(self, x, mask):
       x2 = self.norm1(x)
-      x = x + self.dropout_1(self.multi_head(x2, x2, x2, mask))
+      x = x + self.dropout_1(self.multi_head(x2, mask))
       x2 = self.norm2(x)
       x = x + self.dropout_2(self.ffn(x2))
       return x
@@ -234,17 +198,17 @@ class Decoder_Layer(nn.Module):
         self.dropout_3 = nn.Dropout(dropout)
 
         # 2 multi-head attention blocks
-        self.attn_1 = Multihead_Attention(head, d_model, dropout=dropout)  
-        self.attn_2 = Multihead_Attention(head, d_model, dropout=dropout)
+        self.attn = MultiQuery_attention(head, d_model, dropout)  
+        self.cross_attention = MultiQuery_attention(head, d_model, dropout)
 
         # Feedforward network
         self.ffn = FeedForward(d_model, dropout=dropout)
 
     def forward(self, x, encoder_output, src_mask, trg_mask):
         x2 = self.norm_1(x)
-        x = x + self.dropout_1(self.attn_1(x2, x2, x2, trg_mask))
+        x = x + self.dropout_1(self.attn(x2,trg_mask))
         x2 = self.norm_2(x)
-        x = x + self.dropout_2(self.attn_2(x2, encoder_output, encoder_output, src_mask))
+        x = x + self.dropout_2(self.cross_attention(x2, src_mask,encoder_output))
         x2 = self.norm_3(x)
         x = x + self.dropout_3(self.ffn(x2))
         return x
@@ -256,22 +220,15 @@ def get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 class Encoder(nn.Module):
-    """Một encoder có nhiều encoder layer nhé !!!
-    """
-    def __init__(self, vocab_size, d_model, N, heads, dropout):
+    def __init__(self, vocab_size, d_model, N, heads, dropout, max_len = 200):
         super().__init__()
         self.N = N
         self.embed = Embedding_Layer(vocab_size, d_model)
-        self.pe = Position_Layer(d_model, dropout=dropout)
+        self.pe = Position_Layer(max_len, d_model, dropout=dropout)
         self.layers = get_clones(Encoder_layer(d_model, heads, dropout), N)
         self.norm = Norm(d_model)
 
     def forward(self, src, mask):
-        """
-        src: batch_size x seq_length
-        mask: batch_size x 1 x seq_length
-        output: batch_size x seq_length x d_model
-        """
         x = self.embed(src)
         x = self.pe(x)
         for i in range(self.N):
@@ -280,11 +237,11 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, vocab_size, d_model, N, heads, dropout):
+    def __init__(self, vocab_size, d_model, N, heads, dropout, max_len = 200):
         super().__init__()
         self.N = N
         self.embed = Embedding_Layer(vocab_size, d_model)
-        self.pe = Position_Layer(d_model, dropout=dropout)
+        self.pe = Position_Layer(max_len, d_model, dropout=dropout)
         self.layers = get_clones(Decoder_Layer(d_model, heads, dropout), N)
         self.norm = Norm(d_model)
 
@@ -296,25 +253,27 @@ class Decoder(nn.Module):
         return self.norm(x)
 
 
+
 # Mask functions
 def Nopeak_Mask(size, device):
-    np_mask = np.triu(np.ones((1, size, size)), k=1).astype('uint8')
-    np_mask = (torch.from_numpy(np_mask) == 0).to(device)
-    return np_mask
+    mask = torch.full((1, size, size), float('-inf'), device=device)
+    np_mask = torch.triu(mask, diagonal=1)
+    return np_mask  # [1, T, T]
 
 def Create_Masks(src, trg, src_pad, trg_pad, device):
-    src_mask = (src != src_pad).unsqueeze(-2)
+    src_mask = (src != src_pad).unsqueeze(1).unsqueeze(2).float()  # [B,1,1,S]
+    src_mask = (1.0 - src_mask) * -1e9
 
     if trg is not None:
-        trg_mask = (trg != trg_pad).unsqueeze(-2)
+        trg_mask = (trg != trg_pad).unsqueeze(1).unsqueeze(2).float()  # [B,1,1,T]
+        trg_mask = (1.0 - trg_mask) * -1e9
         size = trg.size(1)
         np_mask = Nopeak_Mask(size, device)
-        trg_mask = trg_mask & np_mask
+        trg_mask = trg_mask + np_mask
     else:
         trg_mask = None
 
     return src_mask, trg_mask
-
 
 
 
@@ -333,7 +292,40 @@ class Transformer(nn.Module):
         output = self.out(d_output)
         return output
 
-def train_model(model, train_loader, val_loader,optimizer, criterion, device, num_epochs=10, batch_size=32):
+
+def load_tokenizer(Refered_Model):
+    tokenizer = AutoTokenizer.from_pretrained(Refered_Model)
+    return tokenizer
+
+class TranslationDataset(Dataset):
+    def __init__(self, src_texts, trg_texts, tokenizer, max_len=128):
+        self.src_texts = src_texts
+        self.trg_texts = trg_texts
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+
+    def __len__(self):
+        return len(self.src_texts)
+
+    def __getitem__(self, idx):
+        src_enc = self.tokenizer(
+            self.src_texts[idx],
+            padding='max_length',
+            truncation=True,
+            max_length=self.max_len,
+            return_tensors="pt"
+        )
+        trg_enc = self.tokenizer(
+            self.trg_texts[idx],
+            padding='max_length',
+            truncation=True,
+            max_length=self.max_len,
+            return_tensors="pt"
+        )
+        return src_enc["input_ids"].squeeze(0), trg_enc["input_ids"].squeeze(0)
+
+
+def train_model(model, train_loader, val_loader,optimizer, criterion, device, pad_id, num_epochs=10):
 
     model = model.to(device)
     best_val_loss = float('inf')
@@ -350,8 +342,7 @@ def train_model(model, train_loader, val_loader,optimizer, criterion, device, nu
             trg_input = tgt_batch[:, :-1]
             trg_output = tgt_batch[:, 1:]
 
-            src_mask, trg_mask = Create_Masks(src_batch, trg_input, 2, 2 , device)
-
+            src_mask, trg_mask = Create_Masks(src_batch, trg_input, pad_id, pad_id, device)
             output = model(src_batch, trg_input, src_mask, trg_mask)
 
             output_dim = output.shape[-1]
@@ -377,7 +368,7 @@ def train_model(model, train_loader, val_loader,optimizer, criterion, device, nu
                 trg_input = tgt_batch[:, :-1]
                 trg_output = tgt_batch[:, 1:]
 
-                src_mask, trg_mask = Create_Masks(src_batch, trg_input, 2, 2 , device)
+                src_mask, trg_mask = Create_Masks(src_batch, trg_input, pad_id, pad_id , device)
 
                 output = model(src_batch, trg_input, src_mask, trg_mask)
 
@@ -394,42 +385,33 @@ def train_model(model, train_loader, val_loader,optimizer, criterion, device, nu
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), "best_transformer_model.pt")
+            torch.save(model.state_dict(), "best_model.pt")
             print("Saved best model.")
 
 
 def main():
-    path = "data/translation_dataset.csv"
-    # path = "/content/drive/MyDrive/Dataset_of_Colab/translation_dataset.csv"
+    train_path = "data/train.csv"
+    test_path = "data/test.csv"
 
+    train_df = pd.read_csv(train_path)
+    val_df = pd.read_csv(test_path)
 
-    df = pd.read_csv(path)
+    tokenizer = load_tokenizer(Refered_Model)
+    pad_id = tokenizer.pad_token_id
 
-    src_vocab, trg_vocab = Create_Dictionary(df["English"].values, df["Vietnamese"].values)
-    train_df, val_df = train_test_split(df, test_size=0.2, random_state=42)
+    train_dataset = TranslationDataset(train_df["English"].values, train_df["Vietnamese"].values, tokenizer)
+    val_dataset = TranslationDataset(val_df["English"].values, val_df["Vietnamese"].values, tokenizer)
 
-    train_dataset = Read_Dataset(train_df["English"].values, train_df["Vietnamese"].values, src_vocab, trg_vocab, max_leng=200)
-    val_dataset = Read_Dataset(val_df["English"].values, val_df["Vietnamese"].values, src_vocab, trg_vocab, max_leng=200)
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
 
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = Transformer(tokenizer.vocab_size, tokenizer.vocab_size, 512, 8, 8, 0.1).to(device)
 
-    # Initialize model
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = Transformer(
-        len(src_vocab),
-        len(trg_vocab),
-        128,
-        4,
-        4,
-        0.1,
-    ).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
 
-    optimizer = optim.Adam(model.parameters(), lr = 0.001,  betas=(0.9, 0.98))
-
-
-    criterion = nn.CrossEntropyLoss(ignore_index = trg_vocab["<pad>"]) # trg_vocab["<pad>"] equals 2
-    train_model(model, train_loader, val_loader, optimizer, criterion, device)
+    train_model(model, train_loader, val_loader, optimizer, criterion, device, pad_id, num_epochs=10)
 
 
 if __name__ == "__main__":
