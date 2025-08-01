@@ -9,24 +9,18 @@ import numpy as np
 import pandas as pd
 from torch import optim
 from tqdm import tqdm
-
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import torch.autograd as Variable
 from sklearn.model_selection import train_test_split
+import argparse
+import copy
+
+
 
 Refered_Model = "VietAI/vit5-base"
 
 
-import torch
-from torch.utils.data import Dataset, DataLoader
-import torch.nn.functional as F
-import math
-import torch.nn as nn
-from transformers import AutoTokenizer
-import numpy as np
-import pandas as pd
-from torch import optim
-from tqdm import tqdm
-import copy
+
 
 Refered_Model = "VietAI/vit5-base"
 
@@ -150,12 +144,12 @@ class MultiQuery_attention(nn.Module):
         v = v.unsqueeze(1).expand(-1, self.head, -1, -1)
 
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_h)
-        scores = scores + self.relative_position_bias(seq_len, device)
+        # scores = scores + self.relative_position_bias(seq_len, device)
 
         if mask is not None:
             scores = scores.masked_fill(mask == 0, float("-inf"))
 
-        attn_weights = nn.functional.softmax(scores, dim=-1)
+        attn_weights = F.softmax(scores, dim=-1)
         attn_output = torch.matmul(attn_weights, v)
         attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.d_model)
         attn_output = self.o(attn_output)
@@ -305,8 +299,8 @@ class TranslationDataset(Dataset):
         return src_enc["input_ids"].squeeze(0), trg_enc["input_ids"].squeeze(0)
 
 
-def train_model(model, train_loader, val_loader,optimizer, criterion, device, pad_id, num_epochs=10):
-
+def train_model(model, train_loader, val_loader, optimizer, criterion, device, pad_id, tokenizer, num_epochs=40):
+    
     model = model.to(device)
     best_val_loss = float('inf')
 
@@ -334,12 +328,13 @@ def train_model(model, train_loader, val_loader,optimizer, criterion, device, pa
             loss.backward()
             optimizer.step()
 
-
             train_loss += loss.item()
             avg_train_loss = train_loss / len(train_loader)
 
+        # -------- VALIDATION --------
         model.eval()
         val_loss = 0
+        bleu_scores = []
 
         with torch.no_grad():
             for src_batch, tgt_batch in tqdm(val_loader, desc=f"Validating Epoch {epoch+1}"):
@@ -349,19 +344,29 @@ def train_model(model, train_loader, val_loader,optimizer, criterion, device, pa
                 trg_output = tgt_batch[:, 1:]
 
                 src_mask, trg_mask = Create_Masks(src_batch, trg_input, pad_id, pad_id , device)
-
                 output = model(src_batch, trg_input, src_mask, trg_mask)
 
                 output_dim = output.shape[-1]
-                output = output.contiguous().view(-1, output_dim)
+                output_logits = output.contiguous().view(-1, output_dim)
                 trg_output = trg_output.contiguous().view(-1)
 
-                loss = criterion(output, trg_output)
+                loss = criterion(output_logits, trg_output)
                 val_loss += loss.item()
 
-        avg_val_loss = val_loss / len(val_loader)
+                # ---- BLEU Calculation ----
+                pred_tokens = F.softmax(output, dim=-1).argmax(dim=-1)  # [B, T]
+                for pred, target in zip(pred_tokens, tgt_batch[:, 1:]):  # ignore <bos>
+                    pred_text = tokenizer.decode(pred, skip_special_tokens=True)
+                    target_text = tokenizer.decode(target, skip_special_tokens=True)
+                    ref = [target_text.split()]
+                    hyp = pred_text.split()
+                    bleu = sentence_bleu(ref, hyp, smoothing_function=SmoothingFunction().method1)
+                    bleu_scores.append(bleu)
 
-        print(f"Epoch {epoch+1}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}")
+        avg_val_loss = val_loss / len(val_loader)
+        avg_bleu = np.mean(bleu_scores)
+
+        print(f"Epoch {epoch+1}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}, BLEU = {avg_bleu:.4f}")
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
@@ -369,29 +374,44 @@ def train_model(model, train_loader, val_loader,optimizer, criterion, device, pa
             print("Saved best model.")
 
 
+def get_args():
+    parser = argparse.ArgumentParser(description="Transformer Training Script")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for training")
+    parser.add_argument("--d_model", type=int, default=512, help="Dimension of model")
+    parser.add_argument("--heads", type=int, default=8, help="Number of attention heads")
+    parser.add_argument("--N", type=int, default=6, help="Number of encoder/decoder layers")
+    return parser.parse_args()
+
 def main():
+    args = get_args()
+
     train_path = "data/train.csv"
     test_path = "data/test.csv"
 
     train_df = pd.read_csv(train_path)
+    
     val_df = pd.read_csv(test_path)
 
+    print(f"Train Size : {train_df.shape}, Val Size: {val_df.shape}")
     tokenizer = load_tokenizer(Refered_Model)
     pad_id = tokenizer.pad_token_id
 
     train_dataset = TranslationDataset(train_df["English"].values, train_df["Vietnamese"].values, tokenizer)
     val_dataset = TranslationDataset(val_df["English"].values, val_df["Vietnamese"].values, tokenizer)
 
-    train_loader = DataLoader(train_dataset, batch_size=20, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=20, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = Transformer(tokenizer.vocab_size, tokenizer.vocab_size, 512, 4, 4, 0.1).to(device)
+    
+    print(f"Model is trained on {device}")
+    
+    model = Transformer(tokenizer.vocab_size, tokenizer.vocab_size, args.d_model, args.N, args.heads, 0.1).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
 
-    train_model(model, train_loader, val_loader, optimizer, criterion, device, pad_id, num_epochs=10)
+    train_model(model, train_loader, val_loader, optimizer, criterion, device, pad_id, tokenizer, num_epochs=40)
 
 
 if __name__ == "__main__":
