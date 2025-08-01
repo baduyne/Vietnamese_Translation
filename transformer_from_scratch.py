@@ -72,7 +72,7 @@ class FeedForward(nn.Module):
         return x
 
 class RelativePositionBias(nn.Module):
-    def __init__(self, num_heads, num_buckets=32, max_distance=128):
+    def __init__(self, num_heads, num_buckets=32, max_distance=127):
         super().__init__()
         self.num_heads = num_heads
         self.num_buckets = num_buckets
@@ -137,7 +137,7 @@ class MultiQuery_attention(nn.Module):
 
         reposbs = self.relative_position_bias(seq_len, device)
 
-        scores = scores + reposbs
+        # scores = scores + reposbs
         if mask is not None:
             if mask.dim() == 2:
                 mask = mask.unsqueeze(1).unsqueeze(2)
@@ -402,11 +402,11 @@ def main():
     train_dataset = TranslationDataset(train_df["English"].values, train_df["Vietnamese"].values, tokenizer)
     val_dataset = TranslationDataset(val_df["English"].values, val_df["Vietnamese"].values, tokenizer)
 
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=20, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=20, shuffle=False)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = Transformer(tokenizer.vocab_size, tokenizer.vocab_size, 512, 8, 8, 0.1).to(device)
+    model = Transformer(tokenizer.vocab_size, tokenizer.vocab_size, 512, 4, 4, 0.1).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
@@ -416,3 +416,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
