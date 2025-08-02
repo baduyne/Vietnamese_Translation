@@ -156,6 +156,7 @@ class MultiQuery_attention(T5Attention):
 
         try:
             # PyTorch >= 2.0 hỗ trợ scaled_dot_product_attention
+            
             attn_output = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=attn_mask,
@@ -438,6 +439,8 @@ def main():
     else:
         print("No previous model found. Training from scratch.")
 
+    check_fa = torch.backends.cuda.flash_sdp_enabled()
+    print("Train by using Flash attention: {check_fa}")
     train_model(model, train_loader, val_loader, optimizer, criterion, device, pad_id, tokenizer, num_epochs=40)
 
 
