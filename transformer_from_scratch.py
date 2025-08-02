@@ -80,8 +80,6 @@ class FeedForward(nn.Module):
         x = self.linear_2(self.dropout(x))
         return x
 
-
-# ==== Relative Position Bias ====
 class RelativePositionBias(nn.Module):
     def __init__(self, num_heads, num_buckets=32, max_distance=200):
         super().__init__()
@@ -440,7 +438,7 @@ def main():
         print("No previous model found. Training from scratch.")
 
     check_fa = torch.backends.cuda.flash_sdp_enabled()
-    print("Train by using Flash attention: {check_fa}")
+    print(f"Train by using Flash attention: {check_fa}")
     train_model(model, train_loader, val_loader, optimizer, criterion, device, pad_id, tokenizer, num_epochs=40)
 
 
