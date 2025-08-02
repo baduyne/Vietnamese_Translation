@@ -116,7 +116,7 @@ for epoch in range(num_epochs):
         logits = outputs.logits  # (batch_size, seq_len, vocab_size)
         labels = batch["labels"]
 
-        # Shift logits and labels for loss calculation as per seq2seq
+
         loss = criterion(logits.view(-1, logits.size(-1)), labels.view(-1))
 
         loss.backward()
@@ -129,7 +129,6 @@ for epoch in range(num_epochs):
         progress_bar.set_postfix(loss=total_loss/(progress_bar.n+1))
 
 
-    # Evaluate after each epoch (có thể viết hàm eval riêng)
     model.eval()
     all_preds = []
     all_labels = []
@@ -145,9 +144,6 @@ for epoch in range(num_epochs):
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
-    # Sử dụng hàm compute_metrics của bạn
-    metrics = compute_metrics((np.array(all_preds), np.array(all_labels)))
-    print(f"Epoch {epoch+1} evaluation BLEU: {metrics['bleu']}")
     metrics = compute_metrics((np.array(all_preds), np.array(all_labels)))
     print(f"Epoch {epoch+1} evaluation BLEU: {metrics['bleu']}")
 

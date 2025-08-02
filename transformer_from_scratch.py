@@ -15,6 +15,7 @@ from sklearn.model_selection import train_test_split
 import argparse
 import copy
 import os
+from transformers.models.t5.modeling_t5 import T5Attention 
 
 
 Refered_Model = "VietAI/vit5-base"
@@ -117,7 +118,7 @@ class RelativePositionBias(nn.Module):
 
 
 # ==== Multi-Query Attention ====
-class MultiQuery_attention(nn.Module):
+class MultiQuery_attention(T5Attention):
     def __init__(self, num_heads, d_model, dropout_rate, num_buckets=32, max_distance=128):
         super().__init__()
         self.head = num_heads
@@ -127,10 +128,9 @@ class MultiQuery_attention(nn.Module):
         self.k = nn.Linear(self.d_model, self.d_h, bias=False)
         self.v = nn.Linear(self.d_model, self.d_h, bias=False)
         self.o = nn.Linear(self.d_model, self.d_model, bias=False)
-        self.relative_position_bias = RelativePositionBias(num_heads, num_buckets, max_distance)
         self.dropout = nn.Dropout(dropout_rate)
 
-    def forward(self, hidden_states, mask=None, key_value_states=None):
+    def forward(self, hidden_states, mask=None, key_value_states=None, is_causal=False, ):
         batch_size, seq_len = hidden_states.shape[:2]
         device = hidden_states.device
 
@@ -139,18 +139,37 @@ class MultiQuery_attention(nn.Module):
         k = self.k(key_value_encoder)
         v = self.v(key_value_encoder)
 
-        q = q.view(batch_size, seq_len, self.head, self.d_h).transpose(1, 2)
-        k = k.unsqueeze(1).expand(-1, self.head, -1, -1)  # fix MQA
+        # Reshape Q: [B, H, T, D/H]
+        q = q.view(batch_size, seq_len, self.head, self.d_h).transpose(1, 2)  # [B,H,T,D/H]
+        # MQA -> K,V shared across heads
+        k = k.unsqueeze(1).expand(-1, self.head, -1, -1)  # [B,H,T,D/H]
         v = v.unsqueeze(1).expand(-1, self.head, -1, -1)
 
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_h)
-        # scores = scores + self.relative_position_bias(seq_len, device)
-
+        # === Flash Attention API ===
         if mask is not None:
-            scores = scores.masked_fill(mask == 0, float("-inf"))
+            # mask [B, 1, 1, T] or [B,1,T,T], convert về bool
+            if mask.dtype != torch.bool:
+                mask = mask > 0
+            attn_mask = mask  # [B,1,1,T] cho encoder, [B,1,T,T] cho decoder causal
+        else:
+            attn_mask = None
 
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_output = torch.matmul(attn_weights, v)
+        try:
+            # PyTorch >= 2.0 hỗ trợ scaled_dot_product_attention
+            attn_output = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=attn_mask,
+                dropout_p=self.dropout.p if self.training else 0.0,
+                is_causal=is_causal
+            )
+        except RuntimeError:
+            scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_h)
+            if attn_mask is not None:
+                scores = scores.masked_fill(~attn_mask, float("-inf"))
+            attn_weights = F.softmax(scores, dim=-1)
+            attn_output = torch.matmul(attn_weights, v)
+
+        # Merge heads
         attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.d_model)
         attn_output = self.o(attn_output)
         return self.dropout(attn_output)
