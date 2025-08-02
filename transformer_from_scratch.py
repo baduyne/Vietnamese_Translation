@@ -14,7 +14,7 @@ import torch.autograd as Variable
 from sklearn.model_selection import train_test_split
 import argparse
 import copy
-
+import os
 
 
 Refered_Model = "VietAI/vit5-base"
@@ -410,6 +410,14 @@ def main():
 
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
+    model_path = "best_model.pt"
+    if os.path.exists(model_path):
+        print(f"Loading existing model from {model_path}")
+        checkpoint = torch.load(model_path, map_location=device)
+        model.load_state_dict(checkpoint)
+        print("Model loaded successfully!")
+    else:
+        print("No previous model found. Training from scratch.")
 
     train_model(model, train_loader, val_loader, optimizer, criterion, device, pad_id, tokenizer, num_epochs=40)
 
