@@ -118,7 +118,7 @@ class RelativePositionBias(nn.Module):
 
 
 # ==== Multi-Query Attention ====
-class MultiQuery_attention(T5Attention):
+class MultiQuery_attention(nn.Module):
     def __init__(self, num_heads, d_model, dropout_rate, num_buckets=32, max_distance=128):
         super().__init__()
         self.head = num_heads
@@ -130,7 +130,7 @@ class MultiQuery_attention(T5Attention):
         self.o = nn.Linear(self.d_model, self.d_model, bias=False)
         self.dropout = nn.Dropout(dropout_rate)
 
-    def forward(self, hidden_states, mask=None, key_value_states=None, is_causal=False, ):
+    def forward(self, hidden_states, mask=None, key_value_states=None, is_causal=False):
         batch_size, seq_len = hidden_states.shape[:2]
         device = hidden_states.device
 
@@ -210,7 +210,7 @@ class Decoder_Layer(nn.Module):
 
     def forward(self, x, encoder_output, src_mask, trg_mask):
         x2 = self.norm_1(x)
-        x = x + self.dropout_1(self.attn(x2, trg_mask))
+        x = x + self.dropout_1(self.attn(x2, trg_mask, is_causal = True))
         x2 = self.norm_2(x)
         x = x + self.dropout_2(self.cross_attention(x2, src_mask, encoder_output))
         x2 = self.norm_3(x)
